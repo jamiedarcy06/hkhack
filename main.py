@@ -907,10 +907,11 @@ def heartbeat(start_usd):
         lag = FEED.lag_ms(5)
         with open(p(f"{TAG}_equity.csv"), "a") as f:
             f.write(f"{time.time():.0f},{S['cum']:.2f},{S['n']},{S['miss']},{sum(open_usd.values()):.0f},{lag:.0f},{S['lagged']},{S['checks']},{acct}\n")
+        log(f"-- {k} min: status=OK trades={S['n']} missed={S['miss']} cum=${S['cum']:+.2f} acct={acct or 'n/a'} "
+            f"open=${sum(open_usd.values()):.0f} lag={lag:.0f}ms checks={S['checks']} tech_skips={S['tech_skipped']} owd={R.owd:.0f}ms")
         if k % 10 == 0:
             json.dump({"coin": coin, "glob": glob}, open(p(f"{TAG}_model.json"), "w"), indent=1)
-            log(f"-- {k} min: trades={S['n']} missed={S['miss']} cum=${S['cum']:+.2f} acct={acct or 'n/a'} lag={lag:.0f}ms tech_skips={S['tech_skipped']} "
-                f"pm={glob['pm']:.2f} D_up={glob['D_UP']:.1f} D_dn={glob['D_DOWN']:.1f} p={glob['p']:.2f} owd={R.owd:.0f}ms")
+            log(f"   [model update] pm={glob['pm']:.2f} D_up={glob['D_UP']:.1f} D_dn={glob['D_DOWN']:.1f} p={glob['p']:.2f}")
 
 
 def main():
