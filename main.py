@@ -46,8 +46,8 @@ except ImportError as e:
     sys.exit(f"Missing required dependency: {e}. Please run: pip install orjson websocket-client")
 
 # ---------- CLI arguments & Engine Configuration ----------
-DUR = float(sys.argv[1]) if len(sys.argv) > 1 else 3600
-LOSS_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 600
+DUR = float(sys.argv[1]) if len(sys.argv) > 1 and float(sys.argv[1]) > 0 else float("inf")
+DD_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 1000.0   # Tip-to-tail peak-to-trough drawdown limit in USD
 BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
 MAX_FRAC = float(sys.argv[4]) if len(sys.argv) > 4 else 0.70
 BASE_FRAC, SLOPE_FRAC = 0.25, 0.08   # fraction of equity per trade = BASE + SLOPE * EV_bp
@@ -380,6 +380,11 @@ class Feed:
                 p_proc.terminate()
             except Exception:
                 pass
+        try:
+            self.q.close()
+            self.q.cancel_join_thread()
+        except Exception:
+            pass
 
     def healthy(self, max_transit=40.0, max_median_lag=200.0, max_silence=0.5):
         now = time.time()
@@ -507,7 +512,7 @@ inflight = [False]
 running = [False]
 stop_reason = [None]
 coin, glob = {}, {"pm": PRIOR["pm"], "D_UP": PRIOR["D"], "D_DOWN": PRIOR["D"], "p": PRIOR["p"], "n": 0}
-S = {"equity": 0.0, "cum": 0.0, "n": 0, "miss": 0, "signals": 0, "lagged": 0, "checks": 0, "no_cap": 0, "jan": 0.0, "dn_skipped": 0, "tech_skipped": 0}
+S = {"equity": 0.0, "cum": 0.0, "peak": 0.0, "n": 0, "miss": 0, "signals": 0, "lagged": 0, "checks": 0, "no_cap": 0, "jan": 0.0, "dn_skipped": 0, "tech_skipped": 0}
 pool = ThreadPoolExecutor(24)
 last_dn = {}
 
@@ -670,16 +675,19 @@ def finish(rec):
         if "net" in rec:
             S["cum"] += rec["net"]
             S["n"] += 1
+            if S["cum"] > S["peak"]:
+                S["peak"] = S["cum"]
         elif rec.get("miss"):
             S["miss"] += 1
         rec["cum"] = S["cum"]
         with open(p(f"{TAG}_trades.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     if "net" in rec:
+        dd = S["peak"] - S["cum"]
         log(f"{rec['dir']:4s} {pair_of(rec['sym']):12s} G={rec['G']:5.1f} EV={rec['ev']:+5.1f}bp ${rec['usd']:>7,.0f} in={rec['in_px']} out={rec['out_px']} "
-            f"{rec['out_role']:5s} {rec['secs']:4.1f}s net=${rec['net']:+8.2f} ({rec['net_bp']:+6.1f}bp) cum=${S['cum']:+.2f} [{rec.get('tech_tag', 'NORM')}]")
-        if S["cum"] < -LOSS_LIMIT and running[0]:
-            stop_reason[0] = f"loss limit hit: cum ${S['cum']:.2f}"
+            f"{rec['out_role']:5s} {rec['secs']:4.1f}s net=${rec['net']:+8.2f} ({rec['net_bp']:+6.1f}bp) cum=${S['cum']:+.2f} (peak=${S['peak']:+.2f}, dd=${dd:.2f}) [{rec.get('tech_tag', 'NORM')}]")
+        if dd >= DD_LIMIT and running[0]:
+            stop_reason[0] = f"drawdown limit hit: peak ${S['peak']:+.2f} -> cum ${S['cum']:.2f} (dd ${dd:.2f} >= ${DD_LIMIT:.0f})"
             running[0] = False
 
 
@@ -957,12 +965,13 @@ def main():
     S["equity"] = start_usd
     if not os.path.exists(p(f"{TAG}_equity.csv")):
         open(p(f"{TAG}_equity.csv"), "w").write("ts,cum_net,trades,missed,open_usd,feed_lag_ms,lag_skips,checks,acct_pnl\n")
-    log(f"START usd={start_usd:.2f} dur={DUR:.0f}s loss_limit=${LOSS_LIMIT:.0f} buffer={BUFFER}bp max_frac={MAX_FRAC} outbound~{R.owd:.0f}ms tickers={len(syms)}")
+    dur_str = "indefinite" if math.isinf(DUR) else f"{DUR:.0f}s"
+    log(f"START usd={start_usd:.2f} dur={dur_str} dd_limit=${DD_LIMIT:.0f} buffer={BUFFER}bp max_frac={MAX_FRAC} outbound~{R.owd:.0f}ms tickers={len(syms)}")
     running[0] = True
     threading.Thread(target=janitor, daemon=True).start()
     threading.Thread(target=heartbeat, args=(start_usd,), daemon=True).start()
-    end = time.time() + DUR
-    while time.time() < end and running[0]:
+    end = (time.time() + DUR) if not math.isinf(DUR) else float("inf")
+    while (math.isinf(DUR) or time.time() < end) and running[0]:
         time.sleep(1)
     running[0] = False
     t = time.time()
