@@ -48,19 +48,21 @@ except ImportError as e:
 # ---------- CLI arguments & Engine Configuration ----------
 DUR = float(sys.argv[1]) if len(sys.argv) > 1 and float(sys.argv[1]) > 0 else float("inf")
 DD_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 1000.0   # Tip-to-tail peak-to-trough drawdown limit in USD
-BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 3.5       # Raised from 1.0 -> 3.5 bp: selective high-EV hurdle
 MAX_FRAC = float(sys.argv[4]) if len(sys.argv) > 4 else 0.70
 BASE_FRAC, SLOPE_FRAC = 0.25, 0.08   # fraction of equity per trade = BASE + SLOPE * EV_bp
 MARGIN = 10                          # ms safety margin on order timing
 INGEST, RECV = 45, 110
 MAX_LAG = 150                        # ms feed synchronization threshold
 MAX_EXIT = 5                         # passive limit order attempts before fallback fill
+MAX_SPREAD_BP = 8.0                  # bp: max spread to avoid costly fallback crosses
+COOLDOWN_SEC = 12.0                  # sec: per-coin cooldown to prevent low-margin volume churn
 FEE_T, FEE_M = 10.0, 5.0
 PRIOR = {"pm": 0.6, "D": 1.5, "p": 0.9}
 SHRINK = 5                           # pseudo-observations behind each coin's estimate
 ALPHA = 0.15                         # EWMA weight for learned quantities
 ALLOW_SHORT = os.environ.get("ALLOW_SHORT") == "1"
-PRE_G = 12.0                         # bp: signal threshold filter before EV calculation
+PRE_G = 18.0                         # bp: raised from 12.0 -> 18.0 bp to eliminate noise
 TAG = "v13"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -416,7 +418,7 @@ class TechnicalIndicatorTracker:
         ema_slow=120,
         max_px_ema=25.0,
         max_rsi=65.0,
-        min_vol=2.5,
+        min_vol=3.0,
         stretch_px_ema=15.0,
         stretch_rsi=58.0
     ):
@@ -507,7 +509,7 @@ BOFF = 0.0
 TECH = TechnicalIndicatorTracker()
 info, snap, live = {}, {}, {}
 lock = threading.Lock()
-busy, open_usd = set(), {}
+busy, open_usd, last_traded = set(), {}, {}
 inflight = [False]
 running = [False]
 stop_reason = [None]
@@ -672,6 +674,7 @@ def finish(rec):
     with lock:
         busy.discard(rec["sym"])
         open_usd.pop(rec["sym"], None)
+        last_traded[rec["sym"]] = time.time()
         if "net" in rec:
             S["cum"] += rec["net"]
             S["n"] += 1
@@ -773,6 +776,8 @@ def trade_down(rec, usd, ref):
 def check(sym):
     if not running[0] or inflight[0] or sym in busy or sym not in snap:
         return
+    if time.time() - last_traded.get(sym, 0) < COOLDOWN_SEC:
+        return
     bb, ba = live[sym]
     sb, sa = snap[sym][:2]
     g_up, g_dn = (bb / sa - 1) * 1e4, (sb / ba - 1) * 1e4
@@ -786,6 +791,8 @@ def check(sym):
     if left < 0:
         return
     spread = (ba / bb - 1) * 1e4
+    if spread > MAX_SPREAD_BP:
+        return
     if g_up >= PRE_G:
         ev, a, D = ev_up(g_up, spread, sym)
         d, G, ref = "UP", g_up, sa
@@ -805,6 +812,9 @@ def check(sym):
     if not tech_ok:
         S["tech_skipped"] += 1
         return
+    if tech_reason == "MODERATE_STRETCH" and ev < BUFFER + 1.5:
+        S["tech_skipped"] += 1
+        return
 
     with lock:
         if inflight[0] or sym in busy or not running[0]:
@@ -818,6 +828,7 @@ def check(sym):
             S["no_cap"] += 1
             return
         busy.add(sym)
+        last_traded[sym] = time.time()
         inflight[0] = True
         open_usd[sym] = usd
         S["signals"] += 1
@@ -966,7 +977,7 @@ def main():
     if not os.path.exists(p(f"{TAG}_equity.csv")):
         open(p(f"{TAG}_equity.csv"), "w").write("ts,cum_net,trades,missed,open_usd,feed_lag_ms,lag_skips,checks,acct_pnl\n")
     dur_str = "indefinite" if math.isinf(DUR) else f"{DUR:.0f}s"
-    log(f"START usd={start_usd:.2f} dur={dur_str} dd_limit=${DD_LIMIT:.0f} buffer={BUFFER}bp max_frac={MAX_FRAC} outbound~{R.owd:.0f}ms tickers={len(syms)}")
+    log(f"START usd={start_usd:.2f} dur={dur_str} dd_limit=${DD_LIMIT:.0f} buffer={BUFFER}bp pre_g={PRE_G}bp max_spread={MAX_SPREAD_BP}bp cooldown={COOLDOWN_SEC}s max_frac={MAX_FRAC} outbound~{R.owd:.0f}ms tickers={len(syms)}")
     running[0] = True
     threading.Thread(target=janitor, daemon=True).start()
     threading.Thread(target=heartbeat, args=(start_usd,), daemon=True).start()
