@@ -49,8 +49,8 @@ except ImportError as e:
 DUR = float(sys.argv[1]) if len(sys.argv) > 1 else 3600
 LOSS_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 600
 BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
-MAX_FRAC = float(sys.argv[4]) if len(sys.argv) > 4 else 0.50
-BASE_FRAC, SLOPE_FRAC = 0.15, 0.06   # fraction of equity per trade = BASE + SLOPE * EV_bp
+MAX_FRAC = float(sys.argv[4]) if len(sys.argv) > 4 else 0.70
+BASE_FRAC, SLOPE_FRAC = 0.25, 0.08   # fraction of equity per trade = BASE + SLOPE * EV_bp
 MARGIN = 10                          # ms safety margin on order timing
 INGEST, RECV = 45, 110
 MAX_LAG = 150                        # ms feed synchronization threshold
