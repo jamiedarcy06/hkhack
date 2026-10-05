@@ -388,6 +388,14 @@ class Feed:
         recent = sorted(l for t, l in self._lag[-200:] if now - t <= 1.0)
         return bool(recent) and recent[len(recent) // 2] <= max_median_lag
 
+    def lag_stats_ms(self, window=1.0):
+        now = time.time()
+        recent = [l for t, l in self._lag[-200:] if now - t <= window]
+        if not recent:
+            return float("inf"), float("inf")
+        s = sorted(recent)
+        return s[len(s) // 2], s[-1]
+
     def lag_ms(self, window=1.0):
         now = time.time()
         recent = [l for t, l in self._lag[-200:] if now - t <= window]
@@ -904,11 +912,11 @@ def heartbeat(start_usd):
                 FEED.boff = BOFF
             except Exception as e:
                 log("   recalibration failed", repr(e))
-        lag = FEED.lag_ms(5)
+        p50_lag, max_lag = FEED.lag_stats_ms(5)
         with open(p(f"{TAG}_equity.csv"), "a") as f:
-            f.write(f"{time.time():.0f},{S['cum']:.2f},{S['n']},{S['miss']},{sum(open_usd.values()):.0f},{lag:.0f},{S['lagged']},{S['checks']},{acct}\n")
+            f.write(f"{time.time():.0f},{S['cum']:.2f},{S['n']},{S['miss']},{sum(open_usd.values()):.0f},{p50_lag:.0f},{S['lagged']},{S['checks']},{acct}\n")
         log(f"-- {k} min: status=OK trades={S['n']} missed={S['miss']} cum=${S['cum']:+.2f} acct={acct or 'n/a'} "
-            f"open=${sum(open_usd.values()):.0f} lag={lag:.0f}ms checks={S['checks']} tech_skips={S['tech_skipped']} owd={R.owd:.0f}ms")
+            f"open=${sum(open_usd.values()):.0f} lag={p50_lag:.0f}ms (max {max_lag:.0f}ms) checks={S['checks']} tech_skips={S['tech_skipped']} owd={R.owd:.0f}ms")
         if k % 10 == 0:
             json.dump({"coin": coin, "glob": glob}, open(p(f"{TAG}_model.json"), "w"), indent=1)
             log(f"   [model update] pm={glob['pm']:.2f} D_up={glob['D_UP']:.1f} D_dn={glob['D_DOWN']:.1f} p={glob['p']:.2f}")
@@ -940,7 +948,7 @@ def main():
         coin.update(m["coin"])
         glob.update(m["glob"])
 
-    FEED = Feed(syms, copies=2, boff=BOFF)
+    FEED = Feed(syms, copies=1, boff=BOFF)
     FEED.start(on_book, on_ticker)
     time.sleep(8)
     unwind("startup")
