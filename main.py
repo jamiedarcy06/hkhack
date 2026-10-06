@@ -48,7 +48,7 @@ except ImportError as e:
 # ---------- CLI arguments & Engine Configuration ----------
 DUR = float(sys.argv[1]) if len(sys.argv) > 1 and float(sys.argv[1]) > 0 else float("inf")
 DD_LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 1000.0   # Tip-to-tail peak-to-trough drawdown limit in USD
-BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 3.5       # Raised from 1.0 -> 3.5 bp: selective high-EV hurdle
+BUFFER = float(sys.argv[3]) if len(sys.argv) > 3 else 2.5       # Default 2.5 bp: selective high-EV hurdle (filters low-edge noise)
 MAX_FRAC = float(sys.argv[4]) if len(sys.argv) > 4 else 0.70
 BASE_FRAC, SLOPE_FRAC = 0.25, 0.08   # fraction of equity per trade = BASE + SLOPE * EV_bp
 MARGIN = 10                          # ms safety margin on order timing
@@ -62,7 +62,7 @@ PRIOR = {"pm": 0.6, "D": 1.5, "p": 0.9}
 SHRINK = 5                           # pseudo-observations behind each coin's estimate
 ALPHA = 0.15                         # EWMA weight for learned quantities
 ALLOW_SHORT = os.environ.get("ALLOW_SHORT") == "1"
-PRE_G = 18.0                         # bp: raised from 12.0 -> 18.0 bp to eliminate noise
+PRE_G = 16.0                         # bp: pre-filter threshold calibrated for 2.5bp EV
 TAG = "v13"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -308,6 +308,7 @@ BASES = ("wss://stream.binance.com:9443", "wss://stream.binance.com:443", "wss:/
 def _feed_worker(base, syms, last_u, last_E, q):
     idx = {s: i for i, s in enumerate(syms)}
     url = base + "/stream?streams=" + "/".join(f"{s.lower()}@bookTicker/{s.lower()}@ticker" for s in syms)
+    last_px = [(0.0, 0.0)] * len(syms)
 
     def on(_, m):
         d = orjson.loads(m)
@@ -318,7 +319,11 @@ def _feed_worker(base, syms, last_u, last_E, q):
             if u <= last_u[i]:
                 return
             last_u[i] = u
-            q.put((0, i, float(x["b"]), float(x["a"]), u, time.time()))
+            b, a = float(x["b"]), float(x["a"])
+            if (b, a) == last_px[i]:
+                return
+            last_px[i] = (b, a)
+            q.put((0, i, b, a, u, time.time()))
         else:
             E = x["E"]
             if E <= last_E[i]:
@@ -812,7 +817,7 @@ def check(sym):
     if not tech_ok:
         S["tech_skipped"] += 1
         return
-    if tech_reason == "MODERATE_STRETCH" and ev < BUFFER + 1.5:
+    if tech_reason == "MODERATE_STRETCH" and ev < BUFFER + 0.5:
         S["tech_skipped"] += 1
         return
 
@@ -935,7 +940,7 @@ def heartbeat(start_usd):
         with open(p(f"{TAG}_equity.csv"), "a") as f:
             f.write(f"{time.time():.0f},{S['cum']:.2f},{S['n']},{S['miss']},{sum(open_usd.values()):.0f},{p50_lag:.0f},{S['lagged']},{S['checks']},{acct}\n")
         log(f"-- {k} min: status=OK trades={S['n']} missed={S['miss']} cum=${S['cum']:+.2f} acct={acct or 'n/a'} "
-            f"open=${sum(open_usd.values()):.0f} lag={p50_lag:.0f}ms (max {max_lag:.0f}ms) checks={S['checks']} tech_skips={S['tech_skipped']} owd={R.owd:.0f}ms")
+            f"open=${sum(open_usd.values()):.0f} lag={p50_lag:.0f}ms (max {max_lag:.0f}ms) checks={S['checks']} tech_skips={S['tech_skipped']} lag_skips={S['lagged']} owd={R.owd:.0f}ms")
         if k % 10 == 0:
             json.dump({"coin": coin, "glob": glob}, open(p(f"{TAG}_model.json"), "w"), indent=1)
             log(f"   [model update] pm={glob['pm']:.2f} D_up={glob['D_UP']:.1f} D_dn={glob['D_DOWN']:.1f} p={glob['p']:.2f}")
