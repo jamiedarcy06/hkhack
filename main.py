@@ -608,13 +608,18 @@ def place(sym, side, qty, px=None):
         msg = str(r.get("ErrMsg"))
         if r.get("Success") or "Available=" not in msg:
             break
-        avail = fq(sym, float(msg.split("Available=")[1].split(",")[0]))
+        avail_amt = float(msg.split("Available=")[1].split(",")[0])
         locked = float(msg.split("Locked=")[1].split("(")[0]) if "Locked=" in msg else 0
         if locked > 0:
             time.sleep(0.4)
             r = signed("POST", "/v3/place_order", o)
-        elif avail > 0:
-            r = signed("POST", "/v3/place_order", dict(o, quantity=avail))
+        elif avail_amt > 0:
+            eff_px = px or snap.get(sym, (0, 0))[1]
+            avail_qty = fq(sym, (avail_amt / eff_px) if side == "BUY" and eff_px > 0 else avail_amt)
+            if avail_qty > 0:
+                r = signed("POST", "/v3/place_order", dict(o, quantity=avail_qty))
+            else:
+                break
         else:
             break
     return (r.get("OrderDetail") or {}), (None if r.get("Success") else r.get("ErrMsg"))
